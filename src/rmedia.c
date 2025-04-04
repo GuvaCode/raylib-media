@@ -34,7 +34,7 @@
 #include <libavutil/imgutils.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
-#include <libpostproc/postproc.h>
+
 
 //---------------------------------------------------------------------------------------------------
 // Defines and Macros
