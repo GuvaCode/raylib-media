@@ -1226,10 +1226,7 @@ bool UpdateMediaEx(MediaStream* media, double deltaTime)
 		}		
 	}
 
-if (HasStream(ctx, STREAM_AUDIO)) {
-    const int readableBytes = GetBufferReadableSpace(&ctx->audioOutputBuffer.state);
-    if (readableBytes > 0) {
-	
+
 		const int readableSegmentBytes = GetBufferReadableSegmentSize(&ctx->audioOutputBuffer.state);
 
 		const int updateSize = MIN(readableSegmentBytes, ctx->audioMaxUpdateSize);
@@ -1241,8 +1238,7 @@ if (HasStream(ctx, STREAM_AUDIO)) {
 		UpdateAudioStream(media->audioStream, &ctx->audioOutputBuffer.data[ctx->audioOutputBuffer.state.readPos], frameCount);
 
 		AdvanceReadPosN(&ctx->audioOutputBuffer.state, updateSize);
-	}
-}
+
 
 	return ret == MEDIA_RET_SUCCEED;
 }
