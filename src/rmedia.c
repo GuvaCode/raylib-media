@@ -1225,8 +1225,10 @@ bool UpdateMediaEx(MediaStream* media, double deltaTime)
 			av_packet_unref(avPacket);
 		}		
 	}
-
-	if (HasStream(ctx, STREAM_AUDIO) && IsAudioStreamProcessed(media->audioStream))
+if (HasStream(ctx, STREAM_AUDIO)) {
+    const int readableBytes = GetBufferReadableSpace(&ctx->audioOutputBuffer.state);
+    if (readableBytes > 0) {
+	#if (HasStream(ctx, STREAM_AUDIO) && IsAudioStreamProcessed(media->audioStream))
 	{
 		const int readableSegmentBytes = GetBufferReadableSegmentSize(&ctx->audioOutputBuffer.state);
 
