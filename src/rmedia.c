@@ -1823,54 +1823,76 @@ bool AVSeekVideoKeyframe(const MediaStream* media)
 
 bool AVSeek(MediaStream* media, int64_t targetTimestamp)
 {
-    MediaContext* ctx = media->ctx;
-    assert(ctx);
+    if (!IsMediaValid(*media)) {
+        TraceLog(LOG_ERROR, "MEDIA: Cannot seek - invalid media");
+        return false;
+    }
 
-    const int ret = avformat_seek_file(ctx->formatContext, -1, INT64_MIN, targetTimestamp, INT64_MAX, AVSEEK_FLAG_BACKWARD);
+    MediaContext* ctx = media->ctx;
+
+    // Остановка аудио перед seek
+    if (IsAudioStreamValid(media->audioStream)) {
+        StopAudioStream(media->audioStream);
+        ClearBuffer(&ctx->audioOutputBuffer);
+    }
+
+    // Выполняем seek
+    int ret = avformat_seek_file(ctx->formatContext, 
+                               -1, 
+                               INT64_MIN, 
+                               targetTimestamp, 
+                               INT64_MAX, 
+                               AVSEEK_FLAG_BACKWARD);
     if (ret < 0) {
         AVPrintError(ret);
         return false;
     }
 
-    ctx->timePos = (double)targetTimestamp / AV_TIME_BASE;
-
-    for(int i = 0; i < STREAM_COUNT; ++i) {
-        AVCodecContext* codecCtx = ctx->streams[i].codecCtx;
-        if(codecCtx) {
-            avcodec_flush_buffers(codecCtx);
+    // Сброс состояния декодеров и буферов
+    for (int i = 0; i < STREAM_COUNT; ++i) {
+        if (ctx->streams[i].codecCtx) {
+            avcodec_flush_buffers(ctx->streams[i].codecCtx);
             ClearQueue(&ctx->streams[i].pendingPackets);
-        }        
+            ctx->streams[i].startPts = AV_NOPTS_VALUE;
+        }
     }
 
-    // Сброс аудио ресемплера
+    // Сброс ресемплера
     if (ctx->swrContext) {
         swr_close(ctx->swrContext);
-        swr_init(ctx->swrContext);
+        ret = swr_init(ctx->swrContext);
+        if (ret < 0) {
+            AVPrintError(ret);
+            TraceLog(LOG_ERROR, "MEDIA: Failed to reset audio resampler");
+            return false;
+        }
     }
 
-    if(!AVSeekVideoKeyframe(media)) {
+    // Обновление позиции
+    ctx->timePos = (double)targetTimestamp / AV_TIME_BASE;
+
+    // Поиск ближайшего ключевого кадра для видео
+    if (HasStream(ctx, STREAM_VIDEO) && !AVSeekVideoKeyframe(media)) {
         return false;
     }
 
+    // Восстановление состояния воспроизведения
     if (IsAudioStreamValid(media->audioStream)) {
-        StopAudioStream(media->audioStream);
-        ClearBuffer(&ctx->audioOutputBuffer);
+        // Захват начальных пакетов
+        UpdateMediaEx(media, 0.0);
 
         switch (GetMediaState(*media)) {
             case MEDIA_STATE_PLAYING:
-                UpdateMediaEx(media, 0.0);
                 PlayAudioStream(media->audioStream);
                 break;
             case MEDIA_STATE_PAUSED:
-                UpdateMediaEx(media, 0.0);
                 PlayAudioStream(media->audioStream);
                 PauseAudioStream(media->audioStream);
                 break;
-            case MEDIA_STATE_STOPPED:
             default:
                 break;
         }
-    }    
+    }
 
     return true;
 }
