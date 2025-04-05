@@ -35,7 +35,6 @@
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
-
 //---------------------------------------------------------------------------------------------------
 // Defines and Macros
 //---------------------------------------------------------------------------------------------------
@@ -556,6 +555,11 @@ MediaContext* LoadMediaContext(const char* fileName, MediaStreamReader streamRea
 	*ctx = (MediaContext){ 0 };
 
 	ctx->state = MEDIA_STATE_INVALID;
+
+	for (int i = 0; i < STREAM_COUNT; ++i)
+	{
+		ctx->streams[i].streamIdx = -1;
+	}
 
 	ctx->formatContext = avformat_alloc_context();
 
