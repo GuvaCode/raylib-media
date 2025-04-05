@@ -197,7 +197,7 @@ static MediaConfig MEDIA = {
 	.ioBufferSize   = 4 * 1024,
 	.videoQueueSize = 50,
 	.audioQueueSize = 50,
-	.audioDecodedBufferSize = 32 * 1024, // TODO: Fine-tune these values.
+	.audioDecodedBufferSize = 16 * 1024, // TODO: Fine-tune these values.
 	.audioMaxUpdateSize     = 4  * 1024, // 
 	.audioStreamBufferSize  = 1  * 1024, //
 	.audioOutputChannels = 2,
@@ -1225,11 +1225,11 @@ bool UpdateMediaEx(MediaStream* media, double deltaTime)
 			av_packet_unref(avPacket);
 		}		
 	}
+
 if (HasStream(ctx, STREAM_AUDIO)) {
     const int readableBytes = GetBufferReadableSpace(&ctx->audioOutputBuffer.state);
-    if (readableBytes > 0) 
-
-	{
+    if (readableBytes > 0) {
+	
 		const int readableSegmentBytes = GetBufferReadableSegmentSize(&ctx->audioOutputBuffer.state);
 
 		const int updateSize = MIN(readableSegmentBytes, ctx->audioMaxUpdateSize);
@@ -1242,6 +1242,7 @@ if (HasStream(ctx, STREAM_AUDIO)) {
 
 		AdvanceReadPosN(&ctx->audioOutputBuffer.state, updateSize);
 	}
+}
 
 	return ret == MEDIA_RET_SUCCEED;
 }
