@@ -1823,77 +1823,58 @@ bool AVSeekVideoKeyframe(const MediaStream* media)
 
 bool AVSeek(MediaStream* media, int64_t targetTimestamp)
 {
-	MediaContext* ctx = media->ctx;
+    MediaContext* ctx = media->ctx;
+    assert(ctx);
 
-	assert(ctx);
+    const int ret = avformat_seek_file(ctx->formatContext, -1, INT64_MIN, targetTimestamp, INT64_MAX, AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        AVPrintError(ret);
+        return false;
+    }
 
-	const int ret = avformat_seek_file(ctx->formatContext, -1, INT64_MIN, targetTimestamp, INT64_MAX, AVSEEK_FLAG_BACKWARD);
+    ctx->timePos = (double)targetTimestamp / AV_TIME_BASE;
 
-	if (ret < 0) 
-	{
-		AVPrintError(ret);
-		return false;
-	}
+    for(int i = 0; i < STREAM_COUNT; ++i) {
+        AVCodecContext* codecCtx = ctx->streams[i].codecCtx;
+        if(codecCtx) {
+            avcodec_flush_buffers(codecCtx);
+            ClearQueue(&ctx->streams[i].pendingPackets);
+        }        
+    }
 
-	// Update the time to the target TS
-	ctx->timePos = (double)targetTimestamp / AV_TIME_BASE;
+    // Сброс аудио ресемплера
+    if (ctx->swrContext) {
+        swr_close(ctx->swrContext);
+        swr_init(ctx->swrContext);
+    }
 
-	for(int i = 0; i < STREAM_COUNT; ++i)
-	{
-		AVCodecContext* codecCtx = ctx->streams[i].codecCtx;
+    if(!AVSeekVideoKeyframe(media)) {
+        return false;
+    }
 
-		if(codecCtx)
-		{
-			avcodec_flush_buffers(codecCtx);
+    if (IsAudioStreamValid(media->audioStream)) {
+        StopAudioStream(media->audioStream);
+        ClearBuffer(&ctx->audioOutputBuffer);
 
-			ClearQueue(&ctx->streams[i].pendingPackets);
-		}		
-	}
+        switch (GetMediaState(*media)) {
+            case MEDIA_STATE_PLAYING:
+                UpdateMediaEx(media, 0.0);
+                PlayAudioStream(media->audioStream);
+                break;
+            case MEDIA_STATE_PAUSED:
+                UpdateMediaEx(media, 0.0);
+                PlayAudioStream(media->audioStream);
+                PauseAudioStream(media->audioStream);
+                break;
+            case MEDIA_STATE_STOPPED:
+            default:
+                break;
+        }
+    }    
 
-	// If the media has a video stream then seek the first video keyframe to avoid image output artifacts
-	if(!AVSeekVideoKeyframe(media))
-	{
-		return false;
-	}
-
-	if (IsAudioStreamValid(media->audioStream))
-	{
-		StopAudioStream(media->audioStream);
-
-		ClearBuffer(&ctx->audioOutputBuffer);
-
-		switch (GetMediaState(*media))
-		{
-		case MEDIA_STATE_PLAYING:
-
-			UpdateMediaEx(media, 0.0); // grab the first packets with deltaTime = 0.0
-
-			PlayAudioStream(media->audioStream);
-
-			break;
-
-		case MEDIA_STATE_PAUSED:
-
-			UpdateMediaEx(media, 0.0); // grab the first packets with deltaTime = 0.0
-
-			PlayAudioStream(media->audioStream);
-
-			PauseAudioStream(media->audioStream);
-
-			break;
-
-		case MEDIA_STATE_STOPPED:
-
-		default:
-
-			// Leave the audio stream in a stopped state
-			break;
-		}
-	}	
-
-	return true;
-
+    return true;
 }
+
 
 void AVPrintError(int errCode)
 {
@@ -1977,75 +1958,53 @@ int  AVProcessVideoFrame(const MediaStream* media)
 	return 0;
 }
 
-int  AVProcessAudioFrame(const MediaStream* media)
+
+int AVProcessAudioFrame(const MediaStream* media)
 {
-	MediaContext* ctx = media->ctx;
+    MediaContext* ctx = media->ctx;
+    int ret = 0;
 
-	int ret = 0;
+    // Проверка соответствия форматов аудио
+    if (av_get_bytes_per_sample(ctx->audioOutputFmt) != (media->audioStream.sampleSize / 8)) {
+        TraceLog(LOG_ERROR, "MEDIA: Audio format mismatch");
+        return MEDIA_ERR_DECODE_AUDIO;
+    }
 
-	// Initialize input data and sample count for conversion. After the first call, inData and inSamples 
-	// will be set to NULL and 0 respectively to signal swr_convert to finish processing remaining data.
-	const uint8_t* const* inData = (const uint8_t* const*)ctx->avFrame->data;
-	int inSamples = ctx->avFrame->nb_samples;
+    const uint8_t* const* inData = (const uint8_t* const*)ctx->avFrame->data;
+    int inSamples = ctx->avFrame->nb_samples;
+    int leftSamples = inSamples;
+    const int bytesPerFrame = av_get_bytes_per_sample(ctx->audioOutputFmt) * media->audioStream.channels;
 
-	// Initialize the number of samples left to convert. The loop will continue until all samples are converted.
-	int leftSamples = inSamples;
+    do {
+        if (IsBufferFull(&ctx->audioOutputBuffer.state)) {
+            TraceLog(LOG_WARNING, "MEDIA: Audio buffer overflow");
+            ret = MEDIA_ERR_OVERFLOW;
+            break;
+        }
+        
+        const int writableSpaceBytes = GetBufferWritableSpace(&ctx->audioOutputBuffer.state);
+        const int maxSamples = writableSpaceBytes / bytesPerFrame;
+        
+        if (maxSamples <= 0) break;
+        
+        uint8_t* outputBuffer = &ctx->audioOutputBuffer.data[ctx->audioOutputBuffer.state.writePos];
+        const int convertedSamples = swr_convert(ctx->swrContext, &outputBuffer, maxSamples, inData, inSamples);
+        
+        if (convertedSamples < 0) {
+            AVPrintError(convertedSamples);
+            ret = MEDIA_ERR_DECODE_AUDIO;
+            break;
+        }
+        
+        const int convertedBytes = convertedSamples * bytesPerFrame;
+        AdvanceWritePosN(&ctx->audioOutputBuffer.state, convertedBytes);
+        
+        leftSamples -= (inData ? convertedSamples : 0);
+        inData = NULL;
+        inSamples = 0;
+    } while (leftSamples > 0 || swr_get_delay(ctx->swrContext, 0) > 0);
 
-	do
-	{
-		if(IsBufferFull(&ctx->audioOutputBuffer.state))
-		{
-			TraceLog(LOG_WARNING, "MEDIA: Not enough space for decoding in the audio buffer.");
-			ret = MEDIA_ERR_OVERFLOW;
-			break;
-		}
-		
-		const int writableSegmentSizeBytes = GetBufferWritableSegmentSize(&ctx->audioOutputBuffer.state);
-
-		// Determine the number of bytes per audio frame, based on sample size and channel count.
-		const int bytesPerFrame = (int)((media->audioStream.sampleSize / 8) * media->audioStream.channels);
-
-		// Calculate the writable segment size in terms of audio samples.
-		const int writableSegmentSizeSamples = writableSegmentSizeBytes / bytesPerFrame;
-
-		uint8_t* outputBuffer = &ctx->audioOutputBuffer.data[ctx->audioOutputBuffer.state.writePos];
-
-		// Convert and store the incoming audio samples into the output buffer.
-		// This will fill up to the writable segment size in samples, using the provided input data.
-		const int convertedSamples = swr_convert(ctx->swrContext,
-		                                         &outputBuffer,
-		                                         writableSegmentSizeSamples,
-		                                         inData,
-			 									 inSamples);
-
-		if(convertedSamples < 0)
-		{
-			AVPrintError(convertedSamples);
-			ret = MEDIA_ERR_DECODE_AUDIO;
-			break; 
-		}
-
-		// Calculate the size in bytes of the converted samples just written to the buffer.
-		const int convertedSamplesBytes = av_samples_get_buffer_size(
-			NULL,
-			(int)media->audioStream.channels,
-			convertedSamples,
-			ctx->audioOutputFmt,
-			1
-		);
-
-		AdvanceWritePosN(&ctx->audioOutputBuffer.state, convertedSamplesBytes);
-
-		leftSamples -= convertedSamples;
-
-		// Setting inData to NULL and inSamples to 0 instructs subsequent swr_convert calls
-		// to process any remaining buffered data
-		inData = NULL;
-		inSamples = 0;
-
-	} while (leftSamples > 0);
-
-	return ret;
+    return ret;
 }
 
 
