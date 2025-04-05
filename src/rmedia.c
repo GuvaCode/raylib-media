@@ -1227,8 +1227,8 @@ bool UpdateMediaEx(MediaStream* media, double deltaTime)
 	}
 if (HasStream(ctx, STREAM_AUDIO)) {
     const int readableBytes = GetBufferReadableSpace(&ctx->audioOutputBuffer.state);
-    if (readableBytes > 0) {
-	#if (HasStream(ctx, STREAM_AUDIO) && IsAudioStreamProcessed(media->audioStream))
+    if (readableBytes > 0) 
+
 	{
 		const int readableSegmentBytes = GetBufferReadableSegmentSize(&ctx->audioOutputBuffer.state);
 
