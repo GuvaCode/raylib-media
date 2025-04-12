@@ -87,6 +87,7 @@ enum
 	MEDIA_ERR_CODEC_ALLOC_FAILED,							// Codec context allocation failure
 	MEDIA_ERR_CTX_PARAMS_FAILED,							// Failed to copy codec parameters
 	MEDIA_ERR_CODEC_OPEN_FAILED,							// Codec initialization failure
+	MEDIA_ERR_SWSCALE_FAILED,								// Error converting/scaling video frame
 
 
 	// Success and EOF return codes -----------------------------------------------------------------
@@ -170,6 +171,8 @@ typedef struct MediaContext
 	// Video stream-related fields
 	struct SwsContext* swsContext;              // Video resampling and scaling context
 	Image videoOutputImage;                     // Image buffer holding the decoded video frame, uploaded to [MediaStream].videoTexture
+	uint8_t *alignedRgbData[4];                 // Pointers to the RGB buffers used for frame conversion
+	int alignedRgbLinesize[4];                  // Linesizes for the RGB buffers used for frame conversion
 
 	// Audio stream-related fields
 	struct SwrContext* swrContext;              // Audio resampling context
@@ -702,7 +705,16 @@ MediaContext* LoadMediaContext(const char* fileName, MediaStreamReader streamRea
 				ctx->videoOutputImage.mipmaps = 1;
 				ctx->videoOutputImage.format  = PIXELFORMAT_UNCOMPRESSED_R8G8B8;
 
-				ImageClearBackground(&ctx->videoOutputImage, BLANK),
+				ImageClearBackground(&ctx->videoOutputImage, BLANK);
+
+				int allocatedBytes = av_image_alloc(ctx->alignedRgbData, ctx->alignedRgbLinesize, codecCtx->width, codecCtx->height, AV_PIX_FMT_RGB24, 32);
+
+				if (allocatedBytes < 0) {
+					TraceLog(LOG_ERROR, "MEDIA: Cannot allocate memory for the frame conversion buffer.");
+					UnloadImage(ctx->videoOutputImage);
+					AVUnloadCodecContext(videoCtx);
+					continue;
+				}
 
 				//-------------------------------------------------------------
 
@@ -890,6 +902,11 @@ void UnloadMediaContext(MediaContext* ctx)
 	{
 		sws_freeContext(ctx->swsContext);
 		ctx->swsContext = NULL;
+	}
+
+	if (ctx->alignedRgbData[0] != NULL)
+	{
+		av_freep(&ctx->alignedRgbData[0]);
 	}
 
 	if (IsImageValid(ctx->videoOutputImage))
@@ -1969,7 +1986,17 @@ int  AVProcessVideoFrame(const MediaStream* media)
 	const int rgbLineSize = codec->width * 3;
 
 	// Convert the frame to RGB
-	sws_scale(ctx->swsContext, (const uint8_t* const*)ctx->avFrame->data, ctx->avFrame->linesize, 0, codec->height, (uint8_t* const*) &ctx->videoOutputImage.data, &rgbLineSize);
+	int ret = sws_scale(ctx->swsContext, (const uint8_t* const*)ctx->avFrame->data, ctx->avFrame->linesize, 0, codec->height, ctx->alignedRgbData, ctx->alignedRgbLinesize);
+	if (ret <= 0) {
+		TraceLog(LOG_ERROR, "MEDIA: Failed to convert frame");
+		return MEDIA_ERR_SWSCALE_FAILED;
+	}
+
+	for (int y = 0; y < codec->height; y++) {
+		memcpy((uint8_t*)ctx->videoOutputImage.data + y * rgbLineSize,
+			   ctx->alignedRgbData[0] + y * ctx->alignedRgbLinesize[0],
+			   rgbLineSize);
+	}
 
 	// Update texture with the decoded image data
 	UpdateTexture(media->videoTexture, ctx->videoOutputImage.data);
