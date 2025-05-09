@@ -735,7 +735,7 @@ MediaContext* LoadMediaContext(const char* fileName, MediaStreamReader streamRea
 
 			if(!IsAudioDeviceReady())
 			{
-				TraceLog(LOG_WARNING, "MEDIA: '%s' - Audio Codec: raylib audio device is not initialized. Audio will be skipped.");
+				TraceLog(LOG_WARNING, "MEDIA: '%s' - Audio Codec: raylib audio device is not initialized. Audio will be skipped.", fileName);
 				continue;
 			}
 
@@ -1206,7 +1206,7 @@ bool UpdateMediaEx(MediaStream* media, double deltaTime)
 
 			if (ret != MEDIA_RET_SUCCEED)
 			{
-				TraceLog(LOG_WARNING, "MEDIA: Failed grabbing packet from stream #i. (Error code: %i)", i, ret);
+				TraceLog(LOG_WARNING, "MEDIA: Failed grabbing packet from stream %i. (Error code: %i)", i, ret);
 				break;
 			}
 
